@@ -87,7 +87,8 @@ from envs.cube_env_wrappers import (
     Phase2Training,
     P2VembObs,
     ICPEmbObs,
-    PNEmbObs
+    PNEmbObs,
+    DSLREmbObs,
 )
 
 
@@ -160,7 +161,7 @@ class Config(WandbConfig, HfConfig, GroupConfig, ConfigBase):
     use_wandb: bool = True
 
     # HfConfig (huggingface) parts
-    hf_repo_id: Optional[str] = 'corn/corn-/arm'
+    hf_repo_id: Optional[str] = 'corn/arm'
     use_hfhub: bool = True
 
     # General experiment / logging
@@ -322,10 +323,12 @@ class Config(WandbConfig, HfConfig, GroupConfig, ConfigBase):
     use_p2v: bool = False
     use_icp_obs: bool = False
     use_pn_obs: bool = False
+    use_dslr_obs: bool = False
 
     p2v: P2VembObs.Config = P2VembObs.Config()
     icp_obs: ICPEmbObs.Config = ICPEmbObs.Config()
     pn_obs: PNEmbObs.Config = PNEmbObs.Config()
+    dslr_obs: DSLREmbObs.Config = DSLREmbObs.Config()
 
     def __post_init__(self):
         self.group = F'{self.machine}-{self.env_name}-{self.model_name}-{self.tag}'
@@ -817,6 +820,12 @@ def load_env(cfg: Config, path,
         env = PNEmbObs(env, cfg.pn_obs)
         env = PopDict(env, ['cloud'])
         update_obs_bound('cloud', None)
+
+    if cfg.use_dslr_obs:
+        env = DSLREmbObs(env, cfg.dslr_obs)
+        env = PopDict(env, ['cloud'])
+        update_obs_bound('cloud', None)
+
     return cfg, env
 
 

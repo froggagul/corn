@@ -11,9 +11,9 @@ ENV PIP_NO_CACHE_DIR=1
 
 # NOTE: Re-declare `USE_CUDA` to bring within build scope.
 ARG USE_CUDA=on
-ARG USERNAME=user
-ARG UID=1000
-ARG GID=1000
+ARG USERNAME=root
+# ARG UID=1000
+# ARG GID=1000
 
 # Install Core / networking packages.
 RUN apt-get update \
@@ -91,23 +91,23 @@ COPY 10_nvidia.json /usr/share/glvnd/egl_vendor.d/10_nvidia.json
 # Setup GUI-access enabled user.
 # FIXME: Perhaps unnecessary since we need to run with
 # --privileged option anyways (for network access).
-RUN echo "useradd -m -s /bin/bash ${USERNAME}"
-RUN [ $(getent group ${GID}) ] || groupadd -g ${GID} ${USERNAME} && \
-    useradd -m -s /bin/bash ${USERNAME} -u ${UID} -g ${GID} && \
-    usermod -aG sudo ${USERNAME} && \
-    echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/${USERNAME} && \
-    chmod 440 /etc/sudoers.d/${USERNAME} && \
-    usermod -u ${UID} ${USERNAME} && \
-    usermod -g ${GID} ${USERNAME}
+# RUN echo "useradd -m -s /bin/bash ${USERNAME}"
+# RUN [ $(getent group ${GID}) ] || groupadd -g ${GID} ${USERNAME} && \
+#     useradd -m -s /bin/bash ${USERNAME} -u ${UID} -g ${GID} && \
+#     usermod -aG sudo ${USERNAME} && \
+#     echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/${USERNAME} && \
+#     chmod 440 /etc/sudoers.d/${USERNAME} && \
+#     usermod -u ${UID} ${USERNAME} && \
+#     usermod -g ${GID} ${USERNAME}
 
 # Add to `video` group (possibly needed to access /dev/dri)
-RUN usermod -aG video ${USERNAME}
+# RUN usermod -aG video ${USERNAME}
 
-USER ${USERNAME}
+# USER ${USERNAME}
 WORKDIR /home/${USERNAME}
 
 # Add ~/.local/bin to path.
-ENV HOME="/home/${USERNAME}"
+ENV HOME="/home/root"
 ENV PATH="${PATH}:${HOME}/.local/bin"
 
 # Update python deps.

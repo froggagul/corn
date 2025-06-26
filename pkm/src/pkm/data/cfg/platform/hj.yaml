@@ -1,0 +1,5 @@
+# @package _global_
+defaults:
+  - desktop
+machine: "hj"
+use_wandb: true

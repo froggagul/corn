@@ -15,6 +15,7 @@ from pathlib import Path
 from gym import spaces
 import trimesh
 
+import os
 import numpy as np
 import torch as th
 
@@ -56,7 +57,7 @@ from pkm.data.transforms.aff import get_gripper_mesh
 from pkm.models.cloud.point_mae import (
     subsample
 )
-
+from pkm.util.latent_obj_util import LatentObjects
 import nvtx
 from icecream import ic
 
@@ -1291,6 +1292,147 @@ class ICPEmbObs(ObservationWrapper):
             _, emb = self.encoder(obs[self._cloud_key], obs)
         return self._update_fn(obs, emb)
 
+class DSLREmbObs(ObservationWrapper):
+    @dataclass
+    class Config(ConfigBase):
+        oricorn_path: str = "/input/DGN/meta-v8/oricorn"
+        reduce_k = 32
+
+    def __init__(self,
+                 env: EnvIface,
+                 cfg: Config,
+                 key: str = 'dslr_emb'):
+        super().__init__(env, self._wrap_obs)
+        self.key = key
+        self.reduce_k = cfg.reduce_k
+
+        with open(os.path.join(cfg.oricorn_path, '..', 'rot_configs.npy'), 'rb') as f:
+            rot_configs = np.load(f, allow_pickle=True).item()
+        self.rot_configs = data = {
+            "type": rot_configs["type"],
+            "Js": [
+                None if j is None else th.tensor(j, dtype=th.float32, device=env.device) for j in rot_configs["Js"]
+            ],
+            "Y_basis": [
+                None if y is None else th.tensor(y, dtype=th.float32, device=env.device) for y in rot_configs["Y_basis"]
+            ],
+            "D_basis": [
+                None if d is None else th.tensor(d, dtype=th.float32, device=env.device) for d in rot_configs["D_basis"]
+            ],
+            "dim_list": rot_configs["dim_list"],
+            "Y_linear_coef": [
+                None if y is None else th.tensor(y, dtype=th.float32, device=env.device) for y in rot_configs["Y_linear_coef"]
+            ],
+            "constant_scale": rot_configs["constant_scale"],
+        }
+        keys = self.scene.keys
+        unique_keys = list(set(keys))
+
+        self.key2idx = {k: i for (i, k) in enumerate(unique_keys)}
+        latent_objects = None
+        for key in unique_keys:
+            oricorn_filename = os.path.join(cfg.oricorn_path, f'{key}.npy')
+            data = np.load(oricorn_filename, allow_pickle=True).item()
+            latent_object = LatentObjects(
+                pos = th.tensor(data["pos"], device=env.device),
+                rel_fps = th.tensor(data["rel_fps"], device=env.device),
+                z = th.tensor(data["z"], device=env.device),
+            )
+            if latent_objects is None:
+                latent_objects = latent_object[None]
+            else:
+                latent_objects = latent_objects.concat(
+                    latent_object[None],
+                    axis=0
+                )
+        self.latent_objects = latent_objects[[self.key2idx[k] for k in keys]]
+ 
+        oricorn_filename = os.path.join(cfg.oricorn_path, f'gripper.npy')
+        data = np.load(oricorn_filename, allow_pickle=True).item()
+        self.finger_latent_object = LatentObjects(
+            pos = th.tensor(data["pos"], device=env.device),
+            rel_fps = th.tensor(data["rel_fps"], device=env.device),
+            z = th.tensor(data["z"], device=env.device),
+        )[None]
+
+        obs_space, update_fn = add_obs_field(
+            env.observation_space, self.key,
+            spaces.Box(-float('inf'), +float('inf'), (self.reduce_k, 38))
+        )
+        self._obs_space = obs_space
+        self._update_fn = update_fn
+
+    @property
+    def observation_space(self):
+        return self._obs_space
+
+    def _wrap_obs(self, obs):
+        obj_ids = self.scene.cur_ids.long()
+        obj_pose = self.tensors['root'][obj_ids, :7]
+
+        body_tensors = self.tensors['body']
+        body_indices = self.robot.ee_body_indices.long()
+        hand_pose = body_tensors[body_indices, :]
+
+        with th.inference_mode():
+            latent_obj_a = self.latent_objects.apply_scale(
+                self.scene.scales, center=th.zeros_like(self.latent_objects.pos),
+            ).apply_pq_z(
+                pos = obj_pose[..., :3],
+                quat = obj_pose[..., 3:7],
+                rot_configs = self.rot_configs,
+            )
+            latent_obj_b = self.finger_latent_object.apply_pq_z(
+                pos = hand_pose[..., 0:3],
+                quat = hand_pose[..., 3:7],
+                rot_configs = self.rot_configs,
+            )
+            # broadphase - get top k pair of z and p where it is close
+            # Get the top k closest pairs
+            latent_obj_a_fps_tf = latent_obj_a.fps_tf # N, 80, 3
+            latent_obj_b_fps_tf = latent_obj_b.fps_tf # N, 80, 3
+            latent_obj_a_z_flat = latent_obj_a.z_flat # N, 80, 16
+            latent_obj_b_z_flat = latent_obj_b.z_flat # N, 80, 16
+
+            pairwise_distance = latent_obj_a_fps_tf[:, :, None, :] - latent_obj_b_fps_tf[:, None, :, :]
+            pairwise_distance = th.linalg.norm(pairwise_distance, dim=-1)  # N, 80, 80
+            pairwise_distance = pairwise_distance.view(pairwise_distance.shape[0], -1)
+
+            _, flat_idx = th.topk(-pairwise_distance, k=self.reduce_k, dim=1)   # both tensors shape (N, k)
+            a_idx = flat_idx // latent_obj_b_fps_tf.shape[1]  # N, k
+            b_idx = flat_idx % latent_obj_b_fps_tf.shape[1]  # N, k
+
+            reduced_z_a = th.gather(
+                latent_obj_a_z_flat,
+                dim=1,
+                index=a_idx.unsqueeze(-1).expand(-1, -1, *latent_obj_a_z_flat.shape[2:])
+            ) # N, k, 16
+            reduced_z_b = th.gather(
+                latent_obj_b_z_flat,
+                dim=1,
+                index=b_idx.unsqueeze(-1).expand(-1, -1, *latent_obj_b_z_flat.shape[2:])
+            )
+            reduced_p_a = th.gather(
+                latent_obj_a_fps_tf,
+                dim=1,
+                index=a_idx.unsqueeze(-1).expand(-1, -1, *latent_obj_a_fps_tf.shape[2:])
+            )  # N, k, 3
+            reduced_p_b = th.gather(
+                latent_obj_b_fps_tf,
+                dim=1,
+                index=b_idx.unsqueeze(-1).expand(-1, -1, *latent_obj_b_fps_tf.shape[2:])
+            )  # N, k, 3
+
+            # TODO - normalize
+
+            # stack z and p
+            reduced_zp_pair = th.cat([
+                reduced_z_a, reduced_z_b,
+                reduced_p_a, reduced_p_b
+            ], dim=-1)  # N, k, 38 (= 16 + 3 + 16 + 3)
+
+        return self._update_fn(obs, reduced_zp_pair)
+
 
 class PNEmbObs(ObservationWrapper):
     @dataclass
@@ -1729,6 +1871,26 @@ def test_icp_emb_obs():
     print(obs['icp_emb'].shape)
     # Box(-inf, inf, (17, 128), float32)
     # torch.Size([1, 17, 128])
+
+def test_dslr_emb_obs():
+    class DummyEnv():
+        def __init__(self):
+            self.device = 'cuda:1'
+            self.observation_space = spaces.Dict()
+
+        def reset(self):
+            obs = {
+                'cloud': th.zeros((1, 512, 3), dtype=th.float32,
+                                  device=self.device),
+                'hand_state': th.zeros((1, 7), dtype=th.float32,
+                                       device=self.device)
+            }
+            return obs
+    env = DummyEnv()
+    wrap = DSLREmbObs(env, DSLREmbObs.Config())
+    obs = wrap.reset()
+    print(wrap.observation_space['dslr_emb'])
+    print(obs['dslr_emb'].shape)
 
 
 def main():

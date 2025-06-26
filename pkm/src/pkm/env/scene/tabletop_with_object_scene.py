@@ -191,6 +191,11 @@ class TableTopWithObjectScene(TableTopScene):
         min_object_restitution: float = 0.0
         max_object_restitution: float = 0.2
 
+    # tensor([[-0.0016, -0.0213,  0.0069],
+    #         [-0.0305,  0.0668,  0.0280],
+    #         [ 0.0168, -0.0192, -0.0139],
+    #         [ 0.0445,  0.0607, -0.0417],
+    #         [-0.0601,  0.0600,  0.0035]], device='cuda:0')
         # Old setting, load one single object
         diverse_object: bool = False
 
