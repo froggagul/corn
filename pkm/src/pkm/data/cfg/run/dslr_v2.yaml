@@ -2,19 +2,18 @@
 
 defaults:
   - cloud_arm_mlp_base
-  - ../net/feature/noop@net.state.feature.cloud
   - ../net/feature/noop@net.state.feature.goal
+  - ../net/feature/noop@net.state.feature.cloud
   - ../net/feature/sd_cross@net.state.feature.dslr_emb
   - ../net/aggregator/noop@net.state.aggregator.dslr_emb
 
 use_dslr_obs: true
-# use_icp_obs: false
 
 net:
   state:
     feature:
       dslr_emb:
-        dim_in: [64, 38]
+        dim_in: [128, 38]
         dim_out: 2096 # 16(num_query) * 128(emb_dim) + 48(ctx_dim)
         cat_ctx: True
         query_keys: ['goal', 'previous_action', 'robot_state', 'phys_params']
@@ -29,4 +28,4 @@ net:
       dim_hidden: []
 
 
-model_name: 'dslr_test'
+model_name: 'dslr_v2'

@@ -2,4 +2,6 @@
 defaults:
   - desktop
 machine: "hj"
+
 use_wandb: true
+use_hfhub: true

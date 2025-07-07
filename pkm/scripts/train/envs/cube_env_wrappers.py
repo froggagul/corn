@@ -74,6 +74,7 @@ except ImportError:
 from pkm.models.rl.net.icp import ICPNet
 from pkm.models.rl.net.pointnet import PointNetEncoder
 from pkm.models.common import transfer
+from pkm.models.rl.net.ev.collision_decoder import DSLRCollisionDecoder
 
 
 def _copy_if(src: th.Tensor, dst: Optional[th.Tensor]) -> th.Tensor:
@@ -1296,7 +1297,9 @@ class DSLREmbObs(ObservationWrapper):
     @dataclass
     class Config(ConfigBase):
         oricorn_path: str = "/input/DGN/meta-v8/oricorn"
-        reduce_k = 32
+        reduce_k = 128
+        reduce_mode = "closest"
+        net = DSLRCollisionDecoder.Config()
 
     def __init__(self,
                  env: EnvIface,
@@ -1305,6 +1308,7 @@ class DSLREmbObs(ObservationWrapper):
         super().__init__(env, self._wrap_obs)
         self.key = key
         self.reduce_k = cfg.reduce_k
+        self.reduce_mode = cfg.reduce_mode
 
         with open(os.path.join(cfg.oricorn_path, '..', 'rot_configs.npy'), 'rb') as f:
             rot_configs = np.load(f, allow_pickle=True).item()
@@ -1325,6 +1329,12 @@ class DSLREmbObs(ObservationWrapper):
             ],
             "constant_scale": rot_configs["constant_scale"],
         }
+        # self.decoder = DSLRCollisionDecoder(cfg.net, self.rot_configs)
+        # if cfg.net.ckpt is not None:
+        #     ckpt = th.load(cfg.net.ckpt, map_location=env.device)
+        #     self.decoder.load_state_dict(ckpt, strict=True)
+        #     self.decoder.to(env.device)
+
         keys = self.scene.keys
         unique_keys = list(set(keys))
 
@@ -1398,9 +1408,27 @@ class DSLREmbObs(ObservationWrapper):
             pairwise_distance = th.linalg.norm(pairwise_distance, dim=-1)  # N, 80, 80
             pairwise_distance = pairwise_distance.view(pairwise_distance.shape[0], -1)
 
-            _, flat_idx = th.topk(-pairwise_distance, k=self.reduce_k, dim=1)   # both tensors shape (N, k)
+            if self.reduce_mode == "closest":
+                # Get the k closest pairs
+                _, flat_idx = th.topk(-pairwise_distance, k=self.reduce_k, dim=1)
+            elif self.reduce_mode == "closest_farthest":
+                _, close_idx = th.topk(-pairwise_distance, k=self.reduce_k // 2, dim=1)
+                _, far_idx = th.topk(pairwise_distance, k=self.reduce_k - self.reduce_k // 2, dim=1)
+                flat_idx = th.cat([close_idx, far_idx], dim=1)
+            elif self.reduce_mode == "all":
+                flat_idx = th.arange(pairwise_distance.shape[1], device=self.device).unsqueeze(0).expand(pairwise_distance.shape[0], -1)
+
             a_idx = flat_idx // latent_obj_b_fps_tf.shape[1]  # N, k
             b_idx = flat_idx % latent_obj_b_fps_tf.shape[1]  # N, k
+
+            # embed = self.decoder(
+            #     latent_obj_a,
+            #     latent_obj_b,
+            #     a_idx,
+            #     b_idx,
+            # ) # [N, k, k, 7]
+
+            # embed = embed.view(embed.shape[0], -1, 7)
 
             reduced_z_a = th.gather(
                 latent_obj_a_z_flat,
@@ -1423,15 +1451,15 @@ class DSLREmbObs(ObservationWrapper):
                 index=b_idx.unsqueeze(-1).expand(-1, -1, *latent_obj_b_fps_tf.shape[2:])
             )  # N, k, 3
 
-            # TODO - normalize
+            # # TODO - normalize
 
-            # stack z and p
-            reduced_zp_pair = th.cat([
+            # # stack z and p
+            embed = th.cat([
                 reduced_z_a, reduced_z_b,
                 reduced_p_a, reduced_p_b
             ], dim=-1)  # N, k, 38 (= 16 + 3 + 16 + 3)
 
-        return self._update_fn(obs, reduced_zp_pair)
+        return self._update_fn(obs, embed)
 
 
 class PNEmbObs(ObservationWrapper):

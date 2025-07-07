@@ -161,7 +161,7 @@ class Config(WandbConfig, HfConfig, GroupConfig, ConfigBase):
     use_wandb: bool = True
 
     # HfConfig (huggingface) parts
-    hf_repo_id: Optional[str] = 'corn/arm'
+    hf_repo_id: Optional[str] = 'froggagul/corn'
     use_hfhub: bool = True
 
     # General experiment / logging

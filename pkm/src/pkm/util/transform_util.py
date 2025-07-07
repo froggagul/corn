@@ -16,7 +16,7 @@ def safe_norm(x, axis, keepdims=False, eps=0.0):
     # temporarily swap x with ones if is_zero, then swap back
     x = torch.where(is_zero, torch.ones_like(x), x)
     n = torch.norm(x, dim=axis, keepdim=keepdims)
-    n = torch.where(is_zero if keepdims else torch.squeeze(is_zero, -1), torch.tensor(0., dtype=n.dtype), n)
+    n = torch.where(is_zero if keepdims else torch.squeeze(is_zero, -1), torch.zeros_like(n), n)
     return n.clip(eps)
 
 # quaternion operations
@@ -225,10 +225,10 @@ def Rm_inv(Rm):
     return T(Rm)
 
 def line2Rm(zaxis, yaxis=np.array([1,0,0])):
-    zaxis = normalize(zaxis + torch.array([0,1e-6,0]))
-    xaxis = torch.cross(yaxis, zaxis)
+    zaxis = normalize(zaxis + torch.tensor([0,1e-6,0], dtype=zaxis.dtype, device=zaxis.device))
+    xaxis = torch.linalg.cross(yaxis, zaxis)
     xaxis = normalize(xaxis)
-    yaxis = torch.cross(zaxis, xaxis)
+    yaxis = torch.linalg.cross(zaxis, xaxis)
     Rm = torch.stack([xaxis, yaxis, zaxis], dim=-1)
     return Rm
 
