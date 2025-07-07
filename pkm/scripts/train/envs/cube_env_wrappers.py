@@ -1298,7 +1298,8 @@ class DSLREmbObs(ObservationWrapper):
     class Config(ConfigBase):
         oricorn_path: str = "/input/DGN/meta-v8/oricorn"
         reduce_k = 128
-        reduce_mode = "closest"
+        reduce_mode = "closest" # ["closest", "closest_farthest", "all"]
+        embed_mode = "concat" # ["concat", "decoder"]
         net = DSLRCollisionDecoder.Config()
 
     def __init__(self,
@@ -1309,6 +1310,7 @@ class DSLREmbObs(ObservationWrapper):
         self.key = key
         self.reduce_k = cfg.reduce_k
         self.reduce_mode = cfg.reduce_mode
+        self.embed_mode = cfg.embed_mode
 
         with open(os.path.join(cfg.oricorn_path, '..', 'rot_configs.npy'), 'rb') as f:
             rot_configs = np.load(f, allow_pickle=True).item()
@@ -1329,11 +1331,18 @@ class DSLREmbObs(ObservationWrapper):
             ],
             "constant_scale": rot_configs["constant_scale"],
         }
-        # self.decoder = DSLRCollisionDecoder(cfg.net, self.rot_configs)
-        # if cfg.net.ckpt is not None:
-        #     ckpt = th.load(cfg.net.ckpt, map_location=env.device)
-        #     self.decoder.load_state_dict(ckpt, strict=True)
-        #     self.decoder.to(env.device)
+
+        if self.embed_mode == "decoder":
+            self.decoder = DSLRCollisionDecoder(cfg.net, self.rot_configs)
+            if cfg.net.ckpt is not None:
+                ckpt = th.load(cfg.net.ckpt, map_location=env.device)
+                self.decoder.load_state_dict(ckpt, strict=True)
+                self.decoder.to(env.device)
+            obs_shape = (self.reduce_k * self.reduce_k, 16)
+        elif self.embed_mode == "concat":
+            obs_shape = (self.reduce_k, 38)
+        else:
+            raise ValueError(f"Unknown embed_mode: {self.embed_mode}")
 
         keys = self.scene.keys
         unique_keys = list(set(keys))
@@ -1365,9 +1374,10 @@ class DSLREmbObs(ObservationWrapper):
             z = th.tensor(data["z"], device=env.device),
         )[None]
 
+        obs_shape = (self.reduce_k, 38) if self.embed_mode == "concat" else (self.reduce_k * self.reduce_k, 7)
         obs_space, update_fn = add_obs_field(
             env.observation_space, self.key,
-            spaces.Box(-float('inf'), +float('inf'), (self.reduce_k, 38))
+            spaces.Box(-float('inf'), +float('inf'), obs_shape)
         )
         self._obs_space = obs_space
         self._update_fn = update_fn
@@ -1421,43 +1431,42 @@ class DSLREmbObs(ObservationWrapper):
             a_idx = flat_idx // latent_obj_b_fps_tf.shape[1]  # N, k
             b_idx = flat_idx % latent_obj_b_fps_tf.shape[1]  # N, k
 
-            # embed = self.decoder(
-            #     latent_obj_a,
-            #     latent_obj_b,
-            #     a_idx,
-            #     b_idx,
-            # ) # [N, k, k, 7]
+            if self.embed_mode == "concat":
+                reduced_z_a = th.gather(
+                    latent_obj_a_z_flat,
+                    dim=1,
+                    index=a_idx.unsqueeze(-1).expand(-1, -1, *latent_obj_a_z_flat.shape[2:])
+                ) # N, k, 16
+                reduced_z_b = th.gather(
+                    latent_obj_b_z_flat,
+                    dim=1,
+                    index=b_idx.unsqueeze(-1).expand(-1, -1, *latent_obj_b_z_flat.shape[2:])
+                )
+                reduced_p_a = th.gather(
+                    latent_obj_a_fps_tf,
+                    dim=1,
+                    index=a_idx.unsqueeze(-1).expand(-1, -1, *latent_obj_a_fps_tf.shape[2:])
+                )  # N, k, 3
+                reduced_p_b = th.gather(
+                    latent_obj_b_fps_tf,
+                    dim=1,
+                    index=b_idx.unsqueeze(-1).expand(-1, -1, *latent_obj_b_fps_tf.shape[2:])
+                )  # N, k, 3
 
-            # embed = embed.view(embed.shape[0], -1, 7)
+                # stack z and p
+                embed = th.cat([
+                    reduced_z_a, reduced_z_b,
+                    reduced_p_a, reduced_p_b
+                ], dim=-1)  # N, k, 38 (= 16 + 3 + 16 + 3)
+            elif self.embed_mode == "decoder":
+                embed = self.decoder(
+                    latent_obj_a,
+                    latent_obj_b,
+                    a_idx,
+                    b_idx,
+                ) # [N, k, k, 7]
 
-            reduced_z_a = th.gather(
-                latent_obj_a_z_flat,
-                dim=1,
-                index=a_idx.unsqueeze(-1).expand(-1, -1, *latent_obj_a_z_flat.shape[2:])
-            ) # N, k, 16
-            reduced_z_b = th.gather(
-                latent_obj_b_z_flat,
-                dim=1,
-                index=b_idx.unsqueeze(-1).expand(-1, -1, *latent_obj_b_z_flat.shape[2:])
-            )
-            reduced_p_a = th.gather(
-                latent_obj_a_fps_tf,
-                dim=1,
-                index=a_idx.unsqueeze(-1).expand(-1, -1, *latent_obj_a_fps_tf.shape[2:])
-            )  # N, k, 3
-            reduced_p_b = th.gather(
-                latent_obj_b_fps_tf,
-                dim=1,
-                index=b_idx.unsqueeze(-1).expand(-1, -1, *latent_obj_b_fps_tf.shape[2:])
-            )  # N, k, 3
-
-            # # TODO - normalize
-
-            # # stack z and p
-            embed = th.cat([
-                reduced_z_a, reduced_z_b,
-                reduced_p_a, reduced_p_b
-            ], dim=-1)  # N, k, 38 (= 16 + 3 + 16 + 3)
+                embed = embed.view(embed.shape[0], -1, 7) # N, K*K, 7
 
         return self._update_fn(obs, embed)
 
