@@ -1297,10 +1297,10 @@ class DSLREmbObs(ObservationWrapper):
     @dataclass
     class Config(ConfigBase):
         oricorn_path: str = "/input/DGN/meta-v8/oricorn"
-        reduce_k = 128
-        reduce_mode = "closest" # ["closest", "closest_farthest", "all"]
-        embed_mode = "concat" # ["concat", "decoder"]
-        net = DSLRCollisionDecoder.Config()
+        reduce_k: int = 128
+        reduce_mode: str = "closest"  # ["closest", "closest_farthest", "all"]
+        embed_mode: str = "concat"  # ["concat", "decoder"]
+        net: DSLRCollisionDecoder.Config = DSLRCollisionDecoder.Config()
 
     def __init__(self,
                  env: EnvIface,
@@ -1409,29 +1409,30 @@ class DSLREmbObs(ObservationWrapper):
             )
             # broadphase - get top k pair of z and p where it is close
             # Get the top k closest pairs
+
             latent_obj_a_fps_tf = latent_obj_a.fps_tf # N, 80, 3
             latent_obj_b_fps_tf = latent_obj_b.fps_tf # N, 80, 3
-            latent_obj_a_z_flat = latent_obj_a.z_flat # N, 80, 16
-            latent_obj_b_z_flat = latent_obj_b.z_flat # N, 80, 16
-
-            pairwise_distance = latent_obj_a_fps_tf[:, :, None, :] - latent_obj_b_fps_tf[:, None, :, :]
-            pairwise_distance = th.linalg.norm(pairwise_distance, dim=-1)  # N, 80, 80
-            pairwise_distance = pairwise_distance.view(pairwise_distance.shape[0], -1)
-
-            if self.reduce_mode == "closest":
-                # Get the k closest pairs
-                _, flat_idx = th.topk(-pairwise_distance, k=self.reduce_k, dim=1)
-            elif self.reduce_mode == "closest_farthest":
-                _, close_idx = th.topk(-pairwise_distance, k=self.reduce_k // 2, dim=1)
-                _, far_idx = th.topk(pairwise_distance, k=self.reduce_k - self.reduce_k // 2, dim=1)
-                flat_idx = th.cat([close_idx, far_idx], dim=1)
-            elif self.reduce_mode == "all":
-                flat_idx = th.arange(pairwise_distance.shape[1], device=self.device).unsqueeze(0).expand(pairwise_distance.shape[0], -1)
-
-            a_idx = flat_idx // latent_obj_b_fps_tf.shape[1]  # N, k
-            b_idx = flat_idx % latent_obj_b_fps_tf.shape[1]  # N, k
-
             if self.embed_mode == "concat":
+                latent_obj_a_z_flat = latent_obj_a.z_flat # N, 80, 16
+                latent_obj_b_z_flat = latent_obj_b.z_flat # N, 80, 16
+
+                pairwise_distance = latent_obj_a_fps_tf[:, :, None, :] - latent_obj_b_fps_tf[:, None, :, :]
+                pairwise_distance = th.linalg.norm(pairwise_distance, dim=-1)  # N, 80, 80
+                pairwise_distance = pairwise_distance.view(pairwise_distance.shape[0], -1)
+
+                if self.reduce_mode == "closest":
+                    # Get the k closest pairs
+                    _, flat_idx = th.topk(-pairwise_distance, k=self.reduce_k, dim=1)
+                elif self.reduce_mode == "closest_farthest":
+                    _, close_idx = th.topk(-pairwise_distance, k=self.reduce_k // 2, dim=1)
+                    _, far_idx = th.topk(pairwise_distance, k=self.reduce_k - self.reduce_k // 2, dim=1)
+                    flat_idx = th.cat([close_idx, far_idx], dim=1)
+                elif self.reduce_mode == "all":
+                    flat_idx = th.arange(pairwise_distance.shape[1], device=self.device).unsqueeze(0).expand(pairwise_distance.shape[0], -1)
+
+                a_idx = flat_idx // latent_obj_b_fps_tf.shape[1]  # N, k
+                b_idx = flat_idx % latent_obj_b_fps_tf.shape[1]  # N, k
+
                 reduced_z_a = th.gather(
                     latent_obj_a_z_flat,
                     dim=1,
@@ -1459,6 +1460,27 @@ class DSLREmbObs(ObservationWrapper):
                     reduced_p_a, reduced_p_b
                 ], dim=-1)  # N, k, 38 (= 16 + 3 + 16 + 3)
             elif self.embed_mode == "decoder":
+                if self.reduce_mode == "closest":
+                    pairwise_distance = latent_obj_a_fps_tf[:, :, None, :] - latent_obj_b_fps_tf[:, None, :, :]
+                    pairwise_distance = th.linalg.norm(pairwise_distance, dim=-1)  # N, 80, 80
+
+                    row_min_val, row_min_idx = pairwise_distance.min(dim=2) # both [N, 80]
+                    _, best_row_idx = th.topk(row_min_val, self.reduce_k, dim=1, largest=False) # [N,K]
+                    # batch_idx = th.arange(pairwise_distance.shape[0])[:, None]                     # [N,1] → broadcast
+                    # matched_col_idx = row_min_idx[batch_idx, best_row_idx]   # [N,K]
+
+                    # -- set B -------------------------------------------------------------
+                    col_min_val, col_min_idx = pairwise_distance.min(dim=1)          # [N, 80]
+                    _, best_col_idx = th.topk(col_min_val, self.reduce_k, dim=1, largest=False)         # [N,K]
+                    # matched_row_idx = col_min_idx[batch_idx, best_col_idx]   # [N,16]
+
+                    a_idx = best_row_idx # [N,16]
+                    b_idx = best_col_idx # [N,16]
+
+                elif self.reduce_mode == "all":
+                    a_idx = th.arange(latent_obj_a.rel_fps.shape[1], device = self.device).unsqueeze(0).expand(latent_obj_a.rel_fps.shape[0], -1)  # N, k
+                    b_idx = th.arange(latent_obj_b.rel_fps.shape[1], device = self.device).unsqueeze(0).expand(latent_obj_b.rel_fps.shape[0], -1)  # N, k
+
                 embed = self.decoder(
                     latent_obj_a,
                     latent_obj_b,

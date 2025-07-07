@@ -9,6 +9,17 @@ defaults:
 
 use_dslr_obs: true
 
+dslr_obs:
+  oricorn_path: "/input/DGN/meta-v8/oricorn"
+  reduce_k: 128
+  reduce_mode: "closest"
+  embed_mode: "concat"
+  net:
+    dim_in: [2, 19]
+    dim_out: 1
+    depth: 3
+    ckpt: "/input/collision_dec.pt"
+
 net:
   state:
     feature:

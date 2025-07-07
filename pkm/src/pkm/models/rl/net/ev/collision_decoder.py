@@ -169,7 +169,7 @@ class DSLRCollisionDecoder(nn.Module):
                                        self.rot_configs,
                                        feature_axis=-2)
 
-        pairwise_pos_dif = th.einsum('...ij,...j->...j', line_align_Rm_inv, pairwise_pos_dif)
+        pairwise_pos_dif = th.einsum('...ij,...j', line_align_Rm_inv, pairwise_pos_dif)
 
         pairwise_z = pairwise_z / scale[...,None,None]
         pairwise_pos_dif = pairwise_pos_dif / scale[...,None]
@@ -179,7 +179,8 @@ class DSLRCollisionDecoder(nn.Module):
         
         line_seg_feat = th.zeros((6, ), dtype=pairwise_z.dtype, device=pairwise_z.device)
         for layer in self.line_segment_mlps:
-            line_seg_feat = F.gelu(layer(line_seg_feat))
+            line_seg_feat = layer(line_seg_feat)
+            line_seg_feat = F.gelu(line_seg_feat)
         
         pairwise_z_a, pairwise_z_b = pairwise_z[...,:z_a.shape[-1]], pairwise_z[...,z_a.shape[-1]:]
         pairwise_z_b_feat = th.zeros((original_z_feat_dim+z_feat_dim,), dtype=pairwise_z.dtype, device=pairwise_z.device)
