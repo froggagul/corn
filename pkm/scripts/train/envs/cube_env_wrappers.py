@@ -18,6 +18,9 @@ import trimesh
 import os
 import numpy as np
 import torch as th
+import torch.nn as nn
+import torch.nn.functional as F
+
 import einops
 
 from pytorch3d.ops.points_alignment import iterative_closest_point
@@ -1366,19 +1369,19 @@ class DSLREmbObs(ObservationWrapper):
                 rel_fps = th.tensor(data["rel_fps"], device=env.device),
                 z = th.tensor(data["z"], device=env.device),
             )
-            # group_id, _ = balanced_kmeans(latent_object.rel_fps, k=16, cap=5, n_iter=40)
+            group_id, _ = balanced_kmeans(latent_object.rel_fps, k=16, cap=5, n_iter=40)
             if latent_objects is None:
                 latent_objects = latent_object[None]
-                # group_ids = group_id[None]
+                group_ids = group_id[None]
             else:
                 latent_objects = latent_objects.concat(
                     latent_object[None],
                     axis=0
                 )
-                # group_ids = th.cat([group_ids, group_id[None]], dim=0)
+                group_ids = th.cat([group_ids, group_id[None]], dim=0)
 
         self.latent_objects = latent_objects[[self.key2idx[k] for k in keys]]
-        # self.group_ids = group_ids[[self.key2idx[k] for k in keys]]
+        self.group_ids = group_ids[[self.key2idx[k] for k in keys]]
  
         oricorn_filename = os.path.join(cfg.oricorn_path, f'gripper.npy')
         data = np.load(oricorn_filename, allow_pickle=True).item()
@@ -1505,6 +1508,56 @@ class DSLREmbObs(ObservationWrapper):
                 ], dim=-1).unsqueeze(2) # [N, M, 1, 19]
                 embed = th.cat([a_z_p, b_z_p_neighbors], dim=2)  # [N, M, 1+K, 19]
                 embed = einops.rearrange(embed, 'N M K D -> N M (K D)') # # [N, M, 19*(1 + K)]
+
+            elif self.embed_mode == "concat" and self.reduce_mode == "per_object_p_group":
+                latent_obj_a_z_flat = latent_obj_a.z_flat # N, 80, 16
+                latent_obj_b_z_flat = latent_obj_b.z_flat # N, 80, 16
+                latent_obj_a_fps_tf = latent_obj_a.fps_tf # N, 80, 3
+                latent_obj_b_fps_tf = latent_obj_b.fps_tf # N, 80, 3
+
+                pairwise_distance = latent_obj_a_fps_tf[:, :, None, :] - latent_obj_b_fps_tf[:, None, :, :]
+                pairwise_distance = th.linalg.norm(pairwise_distance, dim=-1)  # N, 80, 80
+
+                mask = F.one_hot(self.group_id, num_classes=16).permute(0, 2, 1).bool() # N, 16, 80
+
+                pairwise_distance_expanded = pairwise_distance.unsqueeze(1)                     # [N, 1, M, M]
+                mask_exp = mask.unsqueeze(-1)                # [N, G, M, 1]
+                inf = th.full_like(pairwise_distance_expanded, float('inf'))
+                group2point = th.where(mask_exp, pairwise_distance_expanded, inf).min(dim=2).values  # [N, G, M]
+
+                _, topk_idx = th.topk(
+                    group2point, self.reduce_k,
+                    dim=2, largest=False, sorted=True        # [N, G, K] each
+                )
+
+                # B_exp = B.unsqueeze(1).expand(-1, G, -1, -1)        # [N, G, M, 3]
+                G = 16
+                latent_obj_b_z_flat_expanded  = latent_obj_b_z_flat.unsqueeze(1).expand(-1, G, -1, -1) # [N, G, M, 16]
+                latent_obj_b_fps_tf_expanded = latent_obj_b_fps_tf.unsqueeze(1).expand(-1, G, -1, -1) # [N, G, M, 3]
+                latent_obj_b_fps_tf_z_flat_expanded = th.cat([
+                    latent_obj_b_z_flat_expanded,
+                    latent_obj_b_fps_tf_expanded
+                ], dim=-1) # [N, G, M, 19]
+
+                idx_exp = topk_idx.unsqueeze(-1).expand(-1, -1, -1, 19) # [N, G, K, 19]
+                closest_B  = th.take_along_dim(latent_obj_b_fps_tf_z_flat_expanded, idx_exp, dim=2) # [N, G, K, 19]
+
+                latent_obj_a_z_flat_expanded = latent_obj_a_z_flat.unsqueeze(1).expand(-1, G, -1, -1) # [N, G, M, 16]
+                latent_obj_a_fps_tf_expanded = latent_obj_a_fps_tf.unsqueeze(1).expand(-1, G, -1, -1) # [N, G, M, 3]
+                latent_obj_a_fps_tf_z_flat_expanded = th.cat([
+                    latent_obj_a_z_flat_expanded,
+                    latent_obj_a_fps_tf_expanded
+                ], dim=-1) # [N, G, M, 19]
+
+                mask_expanded = mask.unsqueeze(-1).expand(-1, -1, -1, 19) # [N, G, M, 19]
+
+                A_in_group = th.masked_select(latent_obj_a_fps_tf_z_flat_expanded, mask_expanded)         # 1-D tensor
+
+                N = latent_obj_a_fps_tf_z_flat_expanded.shape[0]
+                A_in_group = A_in_group.view(N, 16, 5, 19)# [N, G, 5, 19]
+
+                embed = th.cat([A_in_group, closest_B], dim=2)  # [N, G, 5+K, 19]
+                embed = einops.rearrange(embed, 'N G K D -> N G (K D)') # [N, G, 19*(5 + K)]
 
             elif self.embed_mode == "decoder":
                 if self.reduce_mode == "closest":
