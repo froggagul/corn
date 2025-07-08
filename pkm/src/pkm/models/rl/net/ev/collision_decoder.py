@@ -198,24 +198,31 @@ class DSLRCollisionDecoder(nn.Module):
         pairwise_z_flat = einops.rearrange(pairwise_z, '... j k -> ... (j k)')
         pairwise_feat = th.cat([pairwise_z_flat, pairwise_pos_feat], dim=-1)
 
-        skip = None
+        # skip = None
         x = pairwise_feat
         for idx, layer in enumerate(self.pairwise_mlps):
             x = F.gelu(layer(x))
             if idx == 0:
                 skip = x
-        x = x + skip
+        embed = x + skip
 
-        out = self.out_linear(x)  # (..., 1)
+        # out = self.out_linear(x)  # (..., 1)
+        # # normalize output with scale
+        # out = (out - 30.0) / 50.0
 
         K = latent_obj_a_fps_tf.shape[1]  # K is the number of points in each object
         pairwise_pos_cat = th.cat([
             latent_obj_a_fps_tf[:, :, None, :].expand(-1, -1, K, -1), # N, K, K, 3
             latent_obj_b_fps_tf[:, None, :, :].expand(-1, K, -1, -1), # N, K, K, 3
         ], dim=-1) # N, K, K, 6
+        z_flat_cat = th.cat([
+            z_flat_a[:, :, None, :].expand(-1, -1, K, -1),  # N, K, K, 16
+            z_flat_b[:, None, :, :].expand(-1, K, -1, -1),  # N, K, K, 16
+        ], dim=-1)
         out = th.cat([
             pairwise_pos_cat,
-            out,
-        ], dim=-1)  # N, K, K, 6 + 1
+            z_flat_cat,
+            embed,
+        ], dim=-1)  # N, K, K, 6 + 32 + 64
         
         return out
