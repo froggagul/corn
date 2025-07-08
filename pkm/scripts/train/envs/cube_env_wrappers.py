@@ -1345,7 +1345,7 @@ class DSLREmbObs(ObservationWrapper):
         elif self.embed_mode == "concat" and self.reduce_mode in ["closest", "closest_farthest", "all"]:
             obs_shape = (self.reduce_k, 38)
         elif self.embed_mode == "concat" and self.reduce_mode == "per_object_p":
-            obs_shape = (80, (1 + 1 + self.reduce_k) * 19)
+            obs_shape = (80, (1 + self.reduce_k) * 19)
         else:
             raise ValueError(f"Unknown embed_mode: {self.embed_mode}")
 
@@ -1487,18 +1487,15 @@ class DSLREmbObs(ObservationWrapper):
                     latent_obj_b_fps_tf_expanded
                 ], dim=-1) # [N, M, M, 19]
                 
-                idx_expanded = b_idx.unsqueeze(-1).expand(-1, -1, -1, 3)  # [N, M, K, 3]
+                idx_expanded = b_idx.unsqueeze(-1).expand(-1, -1, -1, latent_obj_b_fps_tf_z_flat_expanded.shape[-1])  # [N, M, K, 19]
                 b_z_p_neighbors = th.take_along_dim(latent_obj_b_fps_tf_z_flat_expanded, idx_expanded, dim=2) # [N, M, K, 19]
 
-                # ---------------------------------------------------------------------
-                # 2) Stick the A-point in front and flatten
-                # ---------------------------------------------------------------------
                 a_z_p = th.cat([
                     latent_obj_a_z_flat,
                     latent_obj_a_fps_tf,
                 ], dim=-1).unsqueeze(2) # [N, M, 1, 19]
                 embed = th.cat([a_z_p, b_z_p_neighbors], dim=2)  # [N, M, 1+K, 19]
-                embed = einops.rearrange(embed, 'N M K D -> N (M K) D') # # [N, M*(1 + K), 19]
+                embed = einops.rearrange(embed, 'N M K D -> N M (K D)') # # [N, M, 19*(1 + K)]
 
             elif self.embed_mode == "decoder":
                 if self.reduce_mode == "closest":

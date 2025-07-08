@@ -243,7 +243,7 @@ RUN python3 -m pip install --upgrade \
     moviepy
 
 # Extra packages for training scripts
-RUN python3 -m pip install --upgrade numpy
+RUN python3 -m pip install --upgrade numpy e3nn jax flax
 # For pretraining
 RUN python3 -m pip install git+https://github.com/katsura-jp/pytorch-cosine-annealing-with-warmup
 # For policy training
