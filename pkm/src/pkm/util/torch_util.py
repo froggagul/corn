@@ -218,6 +218,63 @@ def time_masked_var_mean():
     #       / np.sum(m.detach().cpu().numpy()))
 
 
+def balanced_kmeans(x: th.Tensor,
+                    k: int = 16,
+                    cap: int = 5,
+                    n_iter: int = 30):
+    """
+    Balanced K-means for small data sets.
+
+    Parameters
+    ----------
+    x      : (N, D) points              (N must equal k * cap)
+    k      : number of clusters
+    cap    : maximum (== exact) size of every cluster
+    n_iter : Lloyd iterations
+
+    Returns
+    -------
+    labels  : (N,) cluster index 0‥k-1   (every index appears exactly `cap` times)
+    centers : (k, D) final centroids
+    """
+    N, D = x.shape
+    assert N == k * cap, "N must equal k × cap"
+
+    # --- 1.  initialise centroids (random sample without replacement)
+    perm    = th.randperm(N, device=x.device)
+    centers = x[perm[:k]].clone()                         # (k, D)
+
+    for _ in range(n_iter):
+        # --- 2.  compute pairwise distances (N, k)
+        dists = th.cdist(x, centers)                   # Euclidean
+
+        # --- 3.  greedy balanced assignment
+        #
+        # We flatten the cost matrix, sort all (point, cluster) pairs
+        # by distance, and pick the cheapest still-feasible pair until
+        #   • every point is assigned once
+        #   • each cluster reaches `cap` members.
+        #
+        labels          = th.full((N,), -1, device=x.device, dtype=th.long)
+        cluster_counts  = th.zeros(k,  device=x.device, dtype=th.long)
+
+        flat_idx        = th.argsort(dists.reshape(-1))     # ascending
+        for idx in flat_idx:
+            p  = idx // k     # point index
+            c  = idx %  k     # cluster index
+            if labels[p] == -1 and cluster_counts[c] < cap:
+                labels[p]        = c
+                cluster_counts[c] += 1
+                # Early exit when all points placed
+                if (cluster_counts == cap).all():
+                    break
+
+        # --- 4.  recompute centroids
+        for j in range(k):
+            members = x[labels == j]
+            centers[j] = members.mean(dim=0)
+
+    return labels, centers
 def main():
     test_masked_var_mean_no_mask()
 

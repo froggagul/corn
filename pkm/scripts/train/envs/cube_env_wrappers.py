@@ -59,6 +59,7 @@ from pkm.models.cloud.point_mae import (
     subsample
 )
 from pkm.util.latent_obj_util import LatentObjects
+from pkm.util.torch_util import balanced_kmeans
 import nvtx
 from icecream import ic
 
@@ -1346,6 +1347,8 @@ class DSLREmbObs(ObservationWrapper):
             obs_shape = (self.reduce_k, 38)
         elif self.embed_mode == "concat" and self.reduce_mode == "per_object_p":
             obs_shape = (80, (1 + self.reduce_k) * 19)
+        elif self.embed_mode == "concat" and self.reduce_mode == "per_object_p_group":
+            obs_shape = (16, (5 + self.reduce_k) * 19)
         else:
             raise ValueError(f"Unknown embed_mode: {self.embed_mode}")
 
@@ -1354,6 +1357,7 @@ class DSLREmbObs(ObservationWrapper):
 
         self.key2idx = {k: i for (i, k) in enumerate(unique_keys)}
         latent_objects = None
+        group_ids = None
         for key in unique_keys:
             oricorn_filename = os.path.join(cfg.oricorn_path, f'{key}.npy')
             data = np.load(oricorn_filename, allow_pickle=True).item()
@@ -1362,14 +1366,19 @@ class DSLREmbObs(ObservationWrapper):
                 rel_fps = th.tensor(data["rel_fps"], device=env.device),
                 z = th.tensor(data["z"], device=env.device),
             )
+            # group_id, _ = balanced_kmeans(latent_object.rel_fps, k=16, cap=5, n_iter=40)
             if latent_objects is None:
                 latent_objects = latent_object[None]
+                # group_ids = group_id[None]
             else:
                 latent_objects = latent_objects.concat(
                     latent_object[None],
                     axis=0
                 )
+                # group_ids = th.cat([group_ids, group_id[None]], dim=0)
+
         self.latent_objects = latent_objects[[self.key2idx[k] for k in keys]]
+        # self.group_ids = group_ids[[self.key2idx[k] for k in keys]]
  
         oricorn_filename = os.path.join(cfg.oricorn_path, f'gripper.npy')
         data = np.load(oricorn_filename, allow_pickle=True).item()
@@ -1487,7 +1496,7 @@ class DSLREmbObs(ObservationWrapper):
                     latent_obj_b_fps_tf_expanded
                 ], dim=-1) # [N, M, M, 19]
                 
-                idx_expanded = b_idx.unsqueeze(-1).expand(-1, -1, -1, latent_obj_b_fps_tf_z_flat_expanded.shape[-1])  # [N, M, K, 19]
+                idx_expanded = b_idx.unsqueeze(-1).expand(-1, -1, -1, 19)  # [N, M, K, 19]
                 b_z_p_neighbors = th.take_along_dim(latent_obj_b_fps_tf_z_flat_expanded, idx_expanded, dim=2) # [N, M, K, 19]
 
                 a_z_p = th.cat([
