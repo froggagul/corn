@@ -1518,7 +1518,7 @@ class DSLREmbObs(ObservationWrapper):
                 pairwise_distance = latent_obj_a_fps_tf[:, :, None, :] - latent_obj_b_fps_tf[:, None, :, :]
                 pairwise_distance = th.linalg.norm(pairwise_distance, dim=-1)  # N, 80, 80
 
-                mask = F.one_hot(self.group_id, num_classes=16).permute(0, 2, 1).bool() # N, 16, 80
+                mask = F.one_hot(self.group_ids, num_classes=16).permute(0, 2, 1).bool() # N, 16, 80
 
                 pairwise_distance_expanded = pairwise_distance.unsqueeze(1)                     # [N, 1, M, M]
                 mask_exp = mask.unsqueeze(-1)                # [N, G, M, 1]
