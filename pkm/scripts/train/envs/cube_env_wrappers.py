@@ -16,7 +16,7 @@ from gym import spaces
 import trimesh
 
 import os
-import tqdm
+from tqdm import tqdm
 import numpy as np
 import torch as th
 import torch.nn as nn
