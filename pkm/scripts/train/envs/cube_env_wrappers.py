@@ -16,11 +16,11 @@ from gym import spaces
 import trimesh
 
 import os
+import tqdm
 import numpy as np
 import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
-
 import einops
 
 from pytorch3d.ops.points_alignment import iterative_closest_point
@@ -1353,7 +1353,7 @@ class DSLREmbObs(ObservationWrapper):
         elif self.embed_mode == "concat" and self.reduce_mode == "per_object_p_group":
             obs_shape = (16, (5 + self.reduce_k) * 19)
         else:
-            raise ValueError(f"Unknown embed_mode: {self.embed_mode}")
+            raise ValueError(f"Unknown embed_mode: {self.embed_mode} / reduce_mode: {self.reduce_mode}")
 
         keys = self.scene.keys
         unique_keys = list(set(keys))
@@ -1361,7 +1361,7 @@ class DSLREmbObs(ObservationWrapper):
         self.key2idx = {k: i for (i, k) in enumerate(unique_keys)}
         latent_objects = None
         group_ids = None
-        for key in unique_keys:
+        for key in tqdm(unique_keys):
             oricorn_filename = os.path.join(cfg.oricorn_path, f'{key}.npy')
             data = np.load(oricorn_filename, allow_pickle=True).item()
             latent_object = LatentObjects(
